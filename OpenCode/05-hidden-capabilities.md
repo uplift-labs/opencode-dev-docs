@@ -81,6 +81,12 @@ export default {
 } satisfies { id: string; tui: TuiPlugin }
 ```
 
+Use TUI commands for local, immediate slash-style actions that must not call the
+LLM. Server-side `command.execute.before` is part of the slash/custom command
+prompt flow: it mutates the prompt that will be sent to the model. A TUI command
+registered with `api.command.register` can run local code directly from the TUI,
+show a toast/dialog, and return without creating an assistant turn.
+
 TUI API surfaces:
 
 | API | Use |
