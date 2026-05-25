@@ -5,8 +5,8 @@
 Источник данных:
 
 - Официальная документация: https://opencode.ai/docs, страницы `plugins`, `config`, `sdk`, `server`, `tools`, `custom-tools`, `permissions`.
-- Исходники: `anomalyco/opencode`, ветка `dev`, commit `9f708e748af34cf63c0b1010c4a07ddab1b10ef6` от `2026-05-04`.
-- Ключевые файлы исходников: `packages/plugin/src/index.ts`, `packages/plugin/src/tui.ts`, `packages/opencode/src/plugin/*`, `packages/opencode/src/bus/*`, `packages/opencode/src/session/*`, `packages/opencode/src/tool/*`, `packages/sdk/js/src/v2/gen/types.gen.ts`.
+- Исходники: `anomalyco/opencode`, ветка `dev`, commit `9f708e748af34cf63c0b1010c4a07ddab1b10ef6` от `2026-05-04`; Desktop notes сверены с `dev`/`v1.15.10` на `2026-05-25`.
+- Ключевые файлы исходников: `packages/plugin/src/index.ts`, `packages/plugin/src/tui.ts`, `packages/opencode/src/plugin/*`, `packages/opencode/src/bus/*`, `packages/opencode/src/session/*`, `packages/opencode/src/tool/*`, `packages/app/src/*`, `packages/desktop/src/*`, `packages/sdk/js/src/v2/gen/types.gen.ts`.
 
 ## Документы
 
@@ -21,6 +21,8 @@
 | [`06-dialogs-and-permissions.md`](06-dialogs-and-permissions.md) | Как вызывать UX-диалоги: TUI dialogs, выбор варианта ответа, question tool, permission approvals, SDK replies. |
 | [`07-plugin-best-practices.md`](07-plugin-best-practices.md) | UX/performance/reliability стандарт для production plugins: нативный UI, async bootstrap, fail-open/fail-closed, case studies. |
 | [`08-programmatic-slash-commands.md`](08-programmatic-slash-commands.md) | Как делать slash-style команды, которые выполняют код напрямую через TUI `api.command.register`, без LLM-turn и prompt rewrite. |
+| [`09-rules-and-memory.md`](09-rules-and-memory.md) | Как OpenCode загружает memory/rules: `AGENTS.md`, `CLAUDE.md`, `opencode.json` `instructions`, и как раскладывать правила между global/project/workspace файлами. |
+| [`10-desktop-development.md`](10-desktop-development.md) | Как устроен OpenCode Desktop: Electron, shared web UI, что можно менять plugin-ами, а что требует core/app PR. |
 
 ## Быстрый Выбор Поверхности Расширения
 
@@ -32,6 +34,7 @@
 | Менять аргументы tool call перед выполнением | `tool.execute.before`. |
 | Пост-обработка результата tool call | `tool.execute.after`. |
 | Добавить новый инструмент для модели | `tool` hook или файлы `.opencode/tools/*.ts`. |
+| Разложить project memory/rules | [`09-rules-and-memory.md`](09-rules-and-memory.md): global `AGENTS.md` только для личных правил, project/workspace `AGENTS.md` плюс `opencode.json` `instructions` для shared rules. |
 | Менять список сообщений перед LLM | `experimental.chat.messages.transform`. |
 | Инжектить system prompt/context | `experimental.chat.system.transform` или `experimental.session.compacting`. |
 | Менять provider params/headers | `chat.params`, `chat.headers`. |
@@ -39,6 +42,7 @@
 | Динамически подгружать модели провайдера | `provider.models`. |
 | Сделать slash-команду без LLM-turn | [`08-programmatic-slash-commands.md`](08-programmatic-slash-commands.md): TUI `api.command.register` + `onSelect`. |
 | Встраиваться в TUI | TUI plugin default export `{ id, tui(api) {} }`. |
+| Менять Desktop/Web UI | Core change в `packages/app`; Desktop app в `packages/desktop` только оборачивает shared UI. TUI slots в Desktop не рендерятся. См. [`10-desktop-development.md`](10-desktop-development.md). |
 | Слушать все события | server plugin `event`, SDK `client.event.subscribe()`, HTTP `/event`. |
 | Управлять TUI извне | HTTP/SDK `tui.*` endpoints или TUI events `tui.*`. |
 | Показать выбор/confirm/prompt в UI | TUI plugin `api.ui.dialog.replace(...)` + `DialogSelect/Confirm/Prompt/Alert`. |
@@ -52,6 +56,8 @@ OpenCode расширяется на трех уровнях:
 1. Server plugins: влияют на LLM loop, tools, permissions, providers, auth, config и server event bus.
 2. Custom tools: добавляют callable tools для модели, через plugin `tool` или `.opencode/tools`.
 3. TUI plugins: меняют интерфейс, команды, routes, slots, dialogs, themes и могут слушать события.
+
+Desktop/Web UI не является четвертым user-land plugin surface. Его можно менять как часть upstream/fork разработки через `packages/app` и `packages/desktop`, но локальный TUI plugin не добавит элементы в Electron/Web интерфейс.
 
 Server plugin hook, кроме `event` и object hooks, обычно имеет форму:
 
