@@ -147,7 +147,8 @@ TUI plugin receives:
 
 | Field | Meaning |
 | --- | --- |
-| `api.command` | Register/trigger/show TUI commands. |
+| `api.keymap` | Current TUI command/keybinding API: register layers, dispatch commands, add bindings. |
+| `api.command` | Deprecated v1 compatibility shim for register/trigger/show TUI commands. |
 | `api.route` | Register and navigate routes. |
 | `api.ui` | Dialogs, prompt component, toast, slots. |
 | `api.keybind` | Match/print/create keybinds. |

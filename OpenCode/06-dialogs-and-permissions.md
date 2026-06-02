@@ -12,7 +12,7 @@
 | Дать пользователю выбрать ответ во время agent execution | Built-in tool `question` | Agent/model tool call. |
 | Запросить разрешение на действие | Permission system: config или custom tool `ctx.ask(...)` | Tool execution. |
 | Ответить на pending question/permission извне | SDK V2 `client.question.*`, `client.permission.*` | External client/TUI plugin. |
-| Показать неблокирующее уведомление | `api.ui.toast(...)` или `/tui/show-toast` | TUI/API. |
+| Показать неблокирующее уведомление | `api.ui.toast(...)` или `/tui/show-toast` | Terminal TUI/API. |
 
 Важное ограничение: server hooks (`tool.execute.before`, `chat.*`, `event`) не имеют прямого API `openDialog()`. Для блокирующего UX из server-side кода используйте permission prompts или question tool. Для произвольных окон нужен TUI plugin.
 
@@ -117,14 +117,17 @@ const tui: TuiPlugin = async (api) => {
     ))
   }
 
-  api.command.register(() => [
-    {
-      title: "Choose Guard Mode",
-      value: "uplift.guard.mode",
-      category: "Uplift",
-      onSelect: openPolicySelect,
-    },
-  ])
+  api.keymap.registerLayer({
+    commands: [
+      {
+        name: "uplift.guard.mode",
+        title: "Choose Guard Mode",
+        category: "Uplift",
+        namespace: "palette",
+        run: openPolicySelect,
+      },
+    ],
+  })
 }
 
 export default { id: "uplift.dialogs", tui }

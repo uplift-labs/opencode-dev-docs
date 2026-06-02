@@ -5,7 +5,7 @@
 Источник данных:
 
 - Официальная документация: https://opencode.ai/docs, страницы `plugins`, `config`, `sdk`, `server`, `tools`, `custom-tools`, `permissions`.
-- Исходники: `anomalyco/opencode`, ветка `dev`, commit `9f708e748af34cf63c0b1010c4a07ddab1b10ef6` от `2026-05-04`; Desktop notes сверены с `dev`/`v1.15.10` на `2026-05-25`.
+- Исходники: `anomalyco/opencode`, ветка `dev`; базовые hook notes сверялись с `9f708e748af34cf63c0b1010c4a07ddab1b10ef6`, Desktop/TUI deltas сверены с `18ba80f` на `2026-06-02`.
 - Ключевые файлы исходников: `packages/plugin/src/index.ts`, `packages/plugin/src/tui.ts`, `packages/opencode/src/plugin/*`, `packages/opencode/src/bus/*`, `packages/opencode/src/session/*`, `packages/opencode/src/tool/*`, `packages/app/src/*`, `packages/desktop/src/*`, `packages/sdk/js/src/v2/gen/types.gen.ts`.
 
 ## Документы
@@ -20,7 +20,7 @@
 | [`05-hidden-capabilities.md`](05-hidden-capabilities.md) | Недокументированные возможности из исходников: TUI plugins, slots, workspace adapters, provider/auth hooks, config mutation, flags. |
 | [`06-dialogs-and-permissions.md`](06-dialogs-and-permissions.md) | Как вызывать UX-диалоги: TUI dialogs, выбор варианта ответа, question tool, permission approvals, SDK replies. |
 | [`07-plugin-best-practices.md`](07-plugin-best-practices.md) | UX/performance/reliability стандарт для production plugins: нативный UI, async bootstrap, fail-open/fail-closed, case studies. |
-| [`08-programmatic-slash-commands.md`](08-programmatic-slash-commands.md) | Как делать slash-style команды, которые выполняют код напрямую через TUI `api.command.register`, без LLM-turn и prompt rewrite. |
+| [`08-programmatic-slash-commands.md`](08-programmatic-slash-commands.md) | Как делать slash-style TUI команды, которые выполняют код напрямую через `api.keymap.registerLayer`, без LLM-turn и prompt rewrite. |
 | [`09-rules-and-memory.md`](09-rules-and-memory.md) | Как OpenCode загружает memory/rules: `AGENTS.md`, `CLAUDE.md`, `opencode.json` `instructions`, и как раскладывать правила между global/project/workspace файлами. |
 | [`10-desktop-development.md`](10-desktop-development.md) | Как устроен OpenCode Desktop: Electron, shared web UI, что можно менять plugin-ами, а что требует core/app PR. |
 
@@ -40,7 +40,7 @@
 | Менять provider params/headers | `chat.params`, `chat.headers`. |
 | Добавить auth flow провайдера | `auth` hook. |
 | Динамически подгружать модели провайдера | `provider.models`. |
-| Сделать slash-команду без LLM-turn | [`08-programmatic-slash-commands.md`](08-programmatic-slash-commands.md): TUI `api.command.register` + `onSelect`. |
+| Сделать TUI slash-команду без LLM-turn | [`08-programmatic-slash-commands.md`](08-programmatic-slash-commands.md): TUI `api.keymap.registerLayer({ commands })` + `run()`. |
 | Встраиваться в TUI | TUI plugin default export `{ id, tui(api) {} }`. |
 | Менять Desktop/Web UI | Core change в `packages/app`; Desktop app в `packages/desktop` только оборачивает shared UI. TUI slots в Desktop не рендерятся. См. [`10-desktop-development.md`](10-desktop-development.md). |
 | Слушать все события | server plugin `event`, SDK `client.event.subscribe()`, HTTP `/event`. |

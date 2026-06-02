@@ -1,76 +1,97 @@
-# Programmatic Slash Commands
+# Programmatic TUI Commands
 
-Use this pattern when a slash-style command should run local code immediately instead of turning into an LLM prompt. The practical example is `/worktree`: it creates worktree tabs, reports status in the TUI, and does not need model reasoning.
+Use this pattern when a slash-style TUI action should run local code immediately instead of turning into an LLM prompt. The practical example is `/worktree`: selecting it from the TUI slash autocomplete or command palette can open a TUI dialog, run local git/worktree code, and report status without creating an assistant turn.
+
+Source note: current upstream keeps legacy `api.command.*` only as a v1 shim. New TUI plugins should use `api.keymap.registerLayer({ commands, bindings })`; `api.command.register`, `api.command.trigger`, and `api.command.show` are deprecated in `packages/plugin/src/tui.ts` and bridged through `packages/opencode/src/cli/cmd/tui/plugin/command-shim.ts`.
 
 ## Mental Model
 
-OpenCode has two different command surfaces that look similar from the user seat:
+OpenCode has several command surfaces that can look similar from the user seat:
 
 | Surface | Runs Where | LLM Turn? | Use For |
 | --- | --- | --- | --- |
-| TUI `api.command.register` with `onSelect` | TUI plugin process | No | Local actions, navigation, dialogs, toasts, opening tabs, triggering scripts. |
-| Server `command.execute.before` | Server plugin hook | Yes | Mutating slash/custom command prompt parts before they are sent to the model. |
+| TUI `api.keymap.registerLayer({ commands })` | TUI plugin process | No | Local actions, navigation, dialogs, toasts, opening TUI routes, triggering scripts. |
+| TUI `api.command.*` | TUI plugin process | No | Legacy v1 plugins only; avoid for new work. |
+| Server slash/custom command plus `command.execute.before` | Server prompt flow | Yes | Mutating prompt parts before they are sent to the model. |
+| HTTP/SDK `/tui/execute-command` and `/tui/publish` | External caller to active TUI | No | Remote-controlling an already running TUI. `/tui/execute-command` maps legacy aliases; use `/tui/publish` with `tui.command.execute` for arbitrary keymap command names. |
 
-If the desired behavior is "user types `/name`, code runs, no assistant response is required", use a TUI command. Do not model this as a prompt template plus `command.execute.before`; that still enters the agent loop.
+If the desired behavior is "user selects `/name`, local code runs, no assistant response is required", register a TUI keymap command with `namespace: "palette"` and `slashName`. Do not model this as a prompt template plus `command.execute.before`; that still enters the agent loop.
+
+Important limitation: keymap command `run()` receives no raw slash text. If the action needs flags or free-form arguments, open `api.ui.DialogPrompt` or another TUI dialog from `run()`. A typed prompt like `/worktree -n 2` is not a stable argument transport for TUI keymap commands.
 
 ## Minimal Shape
 
 ```ts
 import type { TuiPlugin } from "@opencode-ai/plugin/tui"
 
-function argsFromCommandInput(input: any) {
-  if (!input) return ""
-  if (typeof input === "string") return input
-  return input.arguments || input.args || input.query || input.value?.replace(/^\/?worktree\s*/, "") || ""
-}
-
 export default {
   id: "uplift.worktree-command",
   tui: async (api) => {
-    if (!api.command?.register) return
+    api.keymap.registerLayer({
+      commands: [
+        {
+          name: "uplift.worktree.create",
+          title: "Create worktree",
+          desc: "Create git worktree tab(s). Supports flags in the dialog.",
+          category: "Worktree",
+          namespace: "palette",
+          slashName: "worktree",
+          slashAliases: ["wt"],
+          run() {
+            api.ui.dialog.replace(() =>
+              api.ui.DialogPrompt({
+                title: "Create worktree",
+                placeholder: "-n 2 --print --no-dirty",
+                onConfirm: async (args) => {
+                  api.ui.dialog.clear()
+                  api.ui.toast({ variant: "info", message: "Creating worktree..." })
 
-    api.command.register(() => [
-      {
-        title: "/worktree",
-        value: "worktree",
-        description: "Create git worktree tab(s). Supports -n N, --print, --no-dirty.",
-        category: "Worktree",
-        slash: { name: "worktree" },
-        onSelect: async (input) => {
-          api.ui.toast({ variant: "info", message: "Creating worktree..." })
+                  const result = await runWorktreeCommand({
+                    directory: api.state.path.directory,
+                    args,
+                  })
 
-          const args = argsFromCommandInput(input)
-          const result = await runWorktreeCommand({
-            directory: api.state.path.directory,
-            args,
-          })
-
-          api.ui.toast({
-            variant: result.status === 0 ? "success" : "warning",
-            message: result.message,
-            duration: 8000,
-          })
+                  api.ui.toast({
+                    variant: result.status === 0 ? "success" : "warning",
+                    message: result.message,
+                    duration: 8000,
+                  })
+                },
+                onCancel: () => api.ui.dialog.clear(),
+              }),
+            )
+          },
         },
-      },
-    ])
+      ],
+      bindings: [
+        {
+          key: "ctrl+w",
+          cmd: "uplift.worktree.create",
+          desc: "Create worktree",
+        },
+      ],
+    })
   },
 } satisfies { id: string; tui: TuiPlugin }
 ```
 
-The exact command implementation can shell out, call a local TypeScript module, use the SDK, or open TUI UI. Keep the command item itself thin: parse user input, run one clear action, then surface the result.
+The exact command implementation can shell out, call a local TypeScript module, use the SDK, or open TUI UI. Keep the command item itself thin: gather user input, run one clear action, then surface the result.
+
+`api.keymap.registerLayer(...)` is automatically scoped by the TUI plugin runtime: the returned cleanup is tracked and disposed when the plugin is deactivated or reloaded.
 
 ## Design Checklist
 
 | Check | Why |
 | --- | --- |
 | Register from a TUI plugin with a stable `id`. | Local path TUI plugins rely on plugin identity for loading and enablement. |
-| Include `title`, `value`, `description`, `category` and `slash.name`. | Makes the command discoverable from the palette and slash flow. |
-| Implement `onSelect`. | This is the programmatic execution path; without it the command is only metadata. |
-| Parse `input.arguments`, `input.args`, `input.query` and fallback `input.value`. | Different invocation paths can pass arguments with different property names. |
+| Use `api.keymap.registerLayer({ commands, bindings })`. | This is the current API; `api.command.*` is deprecated legacy shim code. |
+| Include `name`, `title`, `category`, `namespace: "palette"`, and `slashName`. | Makes the command discoverable from the palette and slash autocomplete. |
+| Implement `run()`. | This is the programmatic execution path; without it the command is only metadata. |
+| Use `api.ui.dialog` for arguments. | TUI keymap `run()` does not receive raw slash arguments. |
 | Use `api.state.path.directory` or `api.state.path.worktree` instead of `process.cwd()`. | The TUI process cwd is not always the target workspace. |
 | Report progress and result with `api.ui.toast` or a dialog. | The command does not create an assistant turn, so user feedback must be explicit. |
-| Keep expensive work out of render paths. | Register metadata synchronously, but run filesystem/git/process work only inside `onSelect`. |
-| Feature-detect optional APIs. | TUI plugin APIs are source-level/internal; fail open if `api.command` is missing. |
+| Keep expensive work out of registration. | Register metadata at plugin startup, but run filesystem/git/process work only inside `run()`. |
+| Feature-detect only for compatibility shims. | New current API should assume `api.keymap`; only older-plugin compatibility should branch to `api.command`. |
 
 ## When Not To Use It
 
@@ -80,12 +101,15 @@ Use a custom tool when the model should decide when to call the capability durin
 
 Use a permission rule or `tool.execute.before` when the goal is to guard an operation rather than expose a user-invoked action.
 
+Do not use TUI commands for Desktop/Web UI extensions. Desktop runs the shared app renderer from `packages/app`; TUI slots, dialogs, and keymap layers do not render inside the Electron/Web UI.
+
 ## Upgrade Smoke Test
 
 After upgrading OpenCode or changing the plugin:
 
 1. Start OpenCode with the TUI plugin enabled.
 2. Open the command palette and confirm the command appears with the expected title/category.
-3. Type the slash command, including arguments such as `/worktree -n 2 --print`.
-4. Confirm `onSelect` receives the arguments and the command does not create an LLM assistant turn.
-5. Confirm failure output is visible to the user through a toast/dialog and does not leave the TUI stuck.
+3. Type `/worktree` and confirm slash autocomplete shows the TUI command.
+4. Select the command and confirm `run()` executes without creating an LLM assistant turn.
+5. If arguments are required, confirm the TUI dialog collects them and failure output is visible through a toast/dialog.
+6. Confirm deactivating/reloading the plugin removes the command and keybinding.

@@ -2,13 +2,13 @@
 
 Недокументированные или слабо документированные возможности OpenCode, найденные в исходниках.
 
-Проверено по `anomalyco/opencode@9f708e748af34cf63c0b1010c4a07ddab1b10ef6`.
+Проверено по `anomalyco/opencode@18ba80f` для Desktop/TUI deltas; более старые hook notes сверялись с `9f708e748af34cf63c0b1010c4a07ddab1b10ef6`.
 
 ## High-Leverage Summary
 
 | Capability | Why It Matters | Source area |
 | --- | --- | --- |
-| TUI plugins | Можно расширять UI, routes, commands, slots, dialogs, themes. | `packages/plugin/src/tui.ts`, `cli/cmd/tui/plugin/runtime.ts` |
+| TUI plugins | Можно расширять terminal UI, routes, keymap commands, slots, dialogs, themes. Не Desktop/Web UI. | `packages/plugin/src/tui.ts`, `cli/cmd/tui/plugin/runtime.ts` |
 | Server `chat.*` hooks | Можно менять LLM params, headers, messages, system prompt. | `session/llm.ts`, `session/prompt.ts` |
 | `tool.definition` | Можно менять tool descriptions/schema до отправки модели. | `tool/registry.ts` |
 | `provider` hook | Можно динамически получать models для существующего provider. | `provider/provider.ts` |
@@ -18,6 +18,8 @@
 | V2 events `session.next.*` | Более детальная телеметрия agent loop/tool/text/reasoning/compaction. | `v2/session-event.ts`, SDK V2 types |
 | TUI plugin manager API | Plugins могут устанавливать, активировать и деактивировать другие plugins. | `api.plugins.*` in TUI runtime |
 | Package `oc-themes` | NPM TUI plugin может поставлять themes без TUI code. | `plugin/shared.ts`, TUI runtime |
+| Desktop sidecar reuse | Desktop использует тот же server/plugin/tool backend, поэтому server hooks/tools работают в Desktop sessions. | `packages/desktop/src/main/server.ts`, `packages/desktop/src/renderer/index.tsx`, `tool/registry.ts` |
+| TUI HTTP control endpoints | `/tui/*` routes публикуют `tui.*` events для активной terminal TUI. | `server/routes/instance/httpapi/groups/tui.ts`, `cli/cmd/tui/event.ts` |
 
 ## Stability Legend
 
@@ -39,7 +41,9 @@
 | `chat.message`, `chat.params`, `chat.headers`, experimental chat/system hooks | Typed but undocumented | `packages/plugin/src/index.ts`, `session/llm.ts`, `session/prompt.ts`, `session/processor.ts`. |
 | `tool.definition` | Typed but undocumented | `tool/registry.ts`; verify output shape still has `description` and `parameters`. |
 | `auth` and `provider` hooks | Typed but undocumented | `provider/auth.ts`, `provider/provider.ts`, internal auth plugins. |
-| TUI plugins, routes, commands, slots, dialogs, themes | Source-only internal | `packages/plugin/src/tui.ts`, TUI plugin runtime, public TUI package types. |
+| TUI plugins, routes, keymap commands, slots, dialogs, themes | Source-only internal | `packages/plugin/src/tui.ts`, TUI plugin runtime, public TUI package types. |
+| Legacy TUI `api.command.*` | Known landmine | Deprecated shim. Prefer `api.keymap.registerLayer`, `api.keymap.dispatchCommand`, and `command.palette.show`. |
+| TUI `/tui/*` HTTP endpoints | Source-only internal | Verify `groups/tui.ts` and `cli/cmd/tui/event.ts`; controls terminal TUI, not Desktop/Web. |
 | `oc-themes` package field | Source-only internal | `plugin/shared.ts`, TUI runtime theme installer. |
 | Workspace adapters | Source-only internal | `experimental_workspace.register`, control-plane/workspace source. |
 | `session.next.*` events and sync envelopes | Typed but undocumented | `v2/session-event.ts`, SDK V2 generated types, `/event` smoke test. |
@@ -68,15 +72,19 @@ import type { TuiPlugin } from "@opencode-ai/plugin/tui"
 export default {
   id: "uplift.tui",
   tui: async (api, options, meta) => {
-    api.command.register(() => [
-      {
-        title: "Uplift Status",
-        value: "uplift.status",
-        description: "Show Uplift guard status",
-        category: "Uplift",
-        onSelect: () => api.ui.toast({ message: "Uplift guards active", variant: "success" }),
-      },
-    ])
+    api.keymap.registerLayer({
+      commands: [
+        {
+          name: "uplift.status",
+          title: "Uplift Status",
+          desc: "Show Uplift guard status",
+          category: "Uplift",
+          namespace: "palette",
+          slashName: "uplift-status",
+          run: () => api.ui.toast({ message: "Uplift guards active", variant: "success" }),
+        },
+      ],
+    })
   },
 } satisfies { id: string; tui: TuiPlugin }
 ```
@@ -84,8 +92,10 @@ export default {
 Use TUI commands for local, immediate slash-style actions that must not call the
 LLM. Server-side `command.execute.before` is part of the slash/custom command
 prompt flow: it mutates the prompt that will be sent to the model. A TUI command
-registered with `api.command.register` can run local code directly from the TUI,
-show a toast/dialog, and return without creating an assistant turn.
+registered with `api.keymap.registerLayer({ commands })` can run local code
+directly from the TUI, show a toast/dialog, and return without creating an
+assistant turn. Legacy `api.command.*` still works through a deprecation shim for
+v1 plugins, but new code should not use it.
 See [`08-programmatic-slash-commands.md`](08-programmatic-slash-commands.md)
 for the full implementation checklist.
 
@@ -93,9 +103,10 @@ TUI API surfaces:
 
 | API | Use |
 | --- | --- |
-| `api.command.register(cb)` | Add command palette items and slash metadata. |
-| `api.command.trigger(value)` | Trigger a command by value. |
-| `api.command.show()` | Open command UI. |
+| `api.keymap.registerLayer({ commands, bindings })` | Add current command palette items, slash metadata and keybindings. |
+| `api.keymap.dispatchCommand(name)` | Trigger a command by name. |
+| `api.keymap.dispatchCommand("command.palette.show")` | Open command UI. |
+| `api.command.*` | Deprecated v1 compatibility shim only. |
 | `api.route.register(routes)` | Add routes. |
 | `api.route.navigate(name, params)` | Navigate to a route. |
 | `api.ui.Dialog*` | Render alert/confirm/prompt/select dialogs. |
@@ -280,12 +291,16 @@ Useful endpoints from official server docs and source:
 | `GET /doc` | OpenAPI 3.1 spec. Use Swagger/codegen. |
 | `GET /event` | Instance SSE stream. |
 | `GET /global/event` | Global SSE stream across workspaces/instances. |
-| `POST /tui/append-prompt` | Append text to active TUI prompt. |
-| `POST /tui/execute-command` | Execute TUI command. |
-| `POST /tui/show-toast` | Show TUI toast. |
+| `POST /tui/append-prompt` | Append text to active terminal TUI prompt. |
+| `POST /tui/execute-command` | Execute legacy SDK alias commands such as `session_new` or `messages_page_up`. Unknown commands are not forwarded. |
+| `POST /tui/show-toast` | Show terminal TUI toast. |
+| `POST /tui/publish` | Publish one of the typed `tui.*` events. |
+| `POST /tui/select-session` | Navigate terminal TUI to a session. |
 | `GET /experimental/tool/ids` | List tool IDs. |
 | `GET /experimental/tool?provider=<p>&model=<m>` | List model-specific tools with JSON schemas. |
 | `POST /mcp` | Dynamically add MCP server. |
+
+The `/tui/*` endpoints are useful for automation around a running TUI. They do not add UI to Desktop/Web and should not be documented as Desktop extension points. For arbitrary current keymap command names, prefer `POST /tui/publish` with `{ "type": "tui.command.execute", "properties": { "command": "<name>" } }` instead of `/tui/execute-command`.
 
 Protect server with:
 
@@ -300,11 +315,17 @@ Username defaults to `opencode`; override with `OPENCODE_SERVER_USERNAME`.
 | Flag | Effect |
 | --- | --- |
 | `OPENCODE_PURE` | Skip external plugins. |
+| `OPENCODE_DISABLE_DEFAULT_PLUGINS` | Skip default bundled plugins. |
+| `OPENCODE_DISABLE_EMBEDDED_WEB_UI` | Disable embedded Web UI serving. |
+| `OPENCODE_DISABLE_EXTERNAL_SKILLS` | Disable external skills. |
 | `OPENCODE_ENABLE_EXA` | Enable `websearch` outside OpenCode provider. |
 | `OPENCODE_ENABLE_QUESTION_TOOL` | Force-enable question tool. |
 | `OPENCODE_EXPERIMENTAL_LSP_TOOL` | Enable LSP tool. |
 | `OPENCODE_EXPERIMENTAL` | Enables some experimental behavior, including LSP tool according to docs. |
 | `OPENCODE_EXPERIMENTAL_EVENT_SYSTEM` | Enables internal TUI Session V2 debug plugin. |
+| `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` | Enables background subagents. |
+| `OPENCODE_EXPERIMENTAL_PLAN_MODE` | Enables experimental plan mode. |
+| `OPENCODE_EXPERIMENTAL_WORKSPACES` | Enables experimental workspaces. |
 
 ## Compatibility Landmines
 
@@ -314,6 +335,9 @@ Username defaults to `opencode`; override with `OPENCODE_SERVER_USERNAME`.
 | Hook output shapes vary | Shape-check `tool.execute.after`, especially MCP/task. |
 | `permission.ask` hook is not called | Use events, permission config, or tool hooks. |
 | `session.idle` is deprecated | Prefer `session.status`. |
+| TUI `api.command.*` is deprecated | Use `api.keymap.registerLayer`, `api.keymap.dispatchCommand`, and `command.palette.show`. |
+| TUI slash keymap commands do not receive raw args | Open `api.ui.DialogPrompt` or another TUI dialog for argument collection. |
+| `/tui/*` endpoints are not Desktop UI APIs | Treat them as terminal TUI automation only. |
 | Local plugin must export id in new format | Always include stable reverse-DNS style `id`. |
 | TUI and server cannot be in same default object | Split files or use package `exports`. |
 | Guard via prompt only is weak | Pair `tool.definition` with hard enforcement. |
