@@ -2,7 +2,7 @@
 
 Design-only brief for a future OpenCode plugin named `multitask`.
 
-Goal: one master OpenCode session decomposes a large task, creates multiple isolated worker workspaces backed by git worktrees, creates one OpenCode session in each workspace, dispatches work in parallel, tracks status, and aggregates worker reports back into the master session.
+Goal: one master OpenCode session decomposes a large task, chooses the minimum useful isolation for each worker, dispatches work in parallel, tracks status, and aggregates reports back into the master session. Isolation escalates only when needed: same-session subagent UX first, then child sessions in the same workspace, then worktree-backed workspaces.
 
 No implementation code belongs in this document. Use it as the source pack for a new repository.
 
@@ -16,10 +16,10 @@ Desired user-facing behavior:
 
 1. User starts in a master session and asks for a large task to be parallelized.
 2. `multitask` plans independent work packages with file scopes, dependencies, models/agents, and risk labels.
-3. After user approval, `multitask` creates one OpenCode workspace per worker, usually via git worktree.
-4. Inside each workspace, `multitask` creates a new OpenCode session and sends a worker prompt asynchronously.
+3. For each work package, `multitask` chooses an execution mode: same-session subagent UX, same-workspace child session, new-workspace child session, or multiple sessions inside a new workspace.
+4. After user approval, `multitask` creates only the sessions/workspaces required by that plan.
 5. The master session remains the coordinator: it shows status, handles blockers, collects reports, and decides when to merge or ask the user.
-6. Each worker session ends with a structured report: summary, changed files, tests run, blockers, branch/worktree, merge readiness.
+6. Each worker ends with a structured report: summary, changed files if any, tests run, blockers, isolation mode, and merge readiness.
 
 Important translation: the plugin should not literally click the UI button `New workspace`. It should use the same underlying OpenCode workspace/session APIs. UI automation is fragile; API calls are testable and work from server/TUI code.
 
@@ -41,7 +41,7 @@ Close matches worth reusing or studying:
 | [`@a5c-ai/babysitter-opencode`](https://github.com/a5c-ai/babysitter/tree/main/plugins/babysitter-opencode) | Event-sourced orchestration plugin and in-turn iteration model. | Useful for deterministic orchestration and human approval patterns. | No claimed worktree/workspace fan-out. |
 | [`opencode-subagent-statusline`](https://github.com/Joaquinvesapa/sub-agent-statusline) | TUI sidebar for subagent status. | Useful visibility pattern for worker status. | Monitoring only. |
 
-Recommendation: do not build a large swarm framework from scratch. Build `multitask` only if it stays narrowly focused on the missing capability: OpenCode workspace/session fan-out and fan-in. Treat `opencode-forge` as the primary implementation reference and consider contributing this as a Forge mode before creating a new standalone package.
+Recommendation: do not build a large swarm framework from scratch. Build `multitask` only if it stays narrowly focused on the missing capability: isolation-aware routing plus OpenCode session/workspace fan-out and fan-in. Treat `opencode-forge` as the primary implementation reference for workspace/session mechanics and consider contributing this as a Forge mode before creating a new standalone package.
 
 ## Source-Backed OpenCode Capabilities
 
@@ -54,11 +54,12 @@ Recommendation: do not build a large swarm framework from scratch. Build `multit
 | Worktree creation internals | `packages/opencode/src/worktree/index.ts` | Creates worktree under OpenCode data dir, can preserve `branch`, emits `worktree.ready` / `worktree.failed`. |
 | Workspace plugin registration | `packages/opencode/src/plugin/index.ts` | Server plugin input exposes `experimental_workspace.register(type, adapter)`. |
 | Runtime feature flag | `packages/opencode/src/effect/runtime-flags.ts` | `OPENCODE_EXPERIMENTAL_WORKSPACES` gates workspace sync/runtime behavior. |
+| Background subagent flag | `packages/opencode/src/effect/runtime-flags.ts`, `packages/opencode/src/tool/task.ts` | `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` is required when the built-in `task` tool uses `background=true`. |
 | V2 SDK workspace API | `packages/sdk/js/src/v2/gen/sdk.gen.ts` | `experimental.workspace.create/list/status/remove/warp/syncList`. |
 | V2 SDK session create | `packages/sdk/js/src/v2/gen/sdk.gen.ts` | `session.create` accepts `parentID`, `title`, `agent`, `model`, `metadata`, `permission`, `workspaceID`. |
 | V2 SDK async prompt | `packages/sdk/js/src/v2/gen/sdk.gen.ts` | `session.promptAsync` queues a message and returns immediately. |
 | Server plugin client caveat | `packages/opencode/src/plugin/index.ts` | Plugin input currently creates `client` from `@opencode-ai/sdk`; do not assume it exposes V2 experimental workspace APIs. Use `@opencode-ai/sdk/v2` or raw HTTP when needed. |
-| Background subagents | `packages/opencode/src/tool/task.ts` | Useful comparison point, but built-in `task` creates child sessions, not isolated worktree workspaces. |
+| Background subagents | `packages/opencode/src/tool/task.ts` | Useful for `same-session-subagent` UX: the tool creates a child task/session under the hood and injects the result back into the parent session; it does not create isolated worktree workspaces. |
 | Workspace/session events | `OpenCode/03-events-reference.md` | Prefer observable `workspace.status`, `worktree.ready/failed`, `session.created/updated/status`, `message.*`. `workspace.ready/failed` types exist in source, but do not rely on them unless emission is verified for the target OpenCode version. |
 | Desktop vs TUI limitation | `OpenCode/10-desktop-development.md` | TUI plugins do not render in Desktop/Web; server plugin behavior can still affect Desktop sessions. |
 
@@ -67,7 +68,8 @@ Recommendation: do not build a large swarm framework from scratch. Build `multit
 | Non-Goal | Reason |
 | --- | --- |
 | Driving UI clicks | Use SDK/HTTP APIs instead of simulating `New workspace` button clicks. |
-| Replacing `opencode-swarm` QA framework | `multitask` should orchestrate workspace/session fan-out, not replicate all guardrails. |
+| Replacing `opencode-swarm` QA framework | `multitask` should orchestrate isolation-aware session/workspace fan-out, not replicate all guardrails. |
+| Creating a worktree for every worker | Worktree/workspace isolation is an escalation mode, not the default for every small subtask. |
 | Replacing `opencode-forge` loop engine | Reuse or borrow its workspace/session loop patterns. |
 | Automatic merge without review | Parallel workers can create conflicting diffs; master must require review/merge readiness. |
 | Desktop visual plugin on day one | No public Desktop/Web plugin surface exists. Use server tools and optional TUI plugin first. |
@@ -96,13 +98,14 @@ The master session is the only place where the user gives the global goal and ap
 | --- | --- |
 | Decomposition | Turn user goal into worker tasks with file scopes and dependencies. |
 | Admission control | Enforce max workers, max cost/time, allowed paths, and risk classes. |
-| Workspace/session creation | Create one workspace plus one child session per admitted worker. |
+| Isolation routing | Pick the least expensive execution mode that keeps context, diffs, and risk manageable. |
+| Session/workspace creation | Create only the child sessions and worktree workspaces required by the approved plan. |
 | Report aggregation | Collect reports and produce a single master status/merge plan. |
 | Human escalation | Ask questions when workers conflict, block, or need permission. |
 
 ### Worker Session
 
-Each worker session receives one bounded task and one worktree-backed workspace.
+Each worker receives one bounded task and an execution mode. A worker can be a same-session subagent UX task, a child session in the current workspace, a child session in a new worktree workspace, or one of several child sessions inside a new worktree workspace.
 
 Worker prompt contract:
 
@@ -120,33 +123,91 @@ Final report contract:
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `status` | Yes | `done`, `blocked`, `failed`, `needs-review`. |
+| `runID` | Yes | Multitask run ID. |
+| `workerID` | Yes | Stable worker ID, such as `w01`. |
+| `mode` | Yes | `same-session-subagent`, `same-workspace-session`, `new-workspace-session`, or `new-workspace-multi-session`. |
 | `summary` | Yes | Short human-readable result. |
-| `workspaceID` | Yes | OpenCode workspace ID. |
-| `sessionID` | Yes | Worker session ID. |
-| `worktree` | Yes | Local worktree path. |
-| `branch` | Yes | Worker branch if branch-backed. |
-| `baseRevision` | Yes | Git revision used as the worker base. |
-| `headRevision` | Yes | Worker branch HEAD if committed, or `uncommitted` if work remains only in the worktree. |
-| `filesChanged` | Yes | Relative paths changed. |
-| `diffRef` | Yes | Path or command for reviewing the worker diff/patch. |
-| `testsRun` | Yes | Commands and pass/fail result. |
+| `sessionID` | Yes | Worker session ID. For same-session subagent UX, use the child task/session ID created by the `task` behavior. If no concrete worker session/task ID is available, do not run that worker in parallel. |
+| `workspaceID` | Workspace modes | OpenCode workspace ID when a new workspace is created. Same-workspace workers can record the current workspace ID if available. |
+| `worktree` | Workspace modes | Local worktree path when a worktree workspace exists. |
+| `branch` | Branch-backed modes | Worker branch if branch-backed. |
+| `baseRevision` | Mutating workers | Git revision used as the worker base. |
+| `headRevision` | Mutating workers | Worker branch HEAD if committed, or `uncommitted` if work remains only in the current worktree. |
+| `filesChanged` | Yes | Relative paths changed, or empty list for read-only/research workers. |
+| `diffRef` | Mutating workers | Path or command for reviewing the worker diff/patch. |
+| `testsRun` | Yes | Commands and pass/fail result, or `not run` with reason. |
 | `blockers` | Yes | Anything master/user must resolve. |
-| `mergeNotes` | Yes | How to integrate safely. |
+| `mergeNotes` | Yes | How to integrate safely, or `none` for read-only workers. |
 
-## Workspace Strategy
+Report envelope rule:
 
-Prefer built-in OpenCode worktree adapter for v1:
+```text
+<MULTITASK_REPORT version="1">
+{
+  "runID": "mt-20260606-120000-auth",
+  "workerID": "w01",
+  "mode": "same-workspace-session",
+  "sessionID": "ses_worker",
+  "status": "done",
+  "summary": "Updated auth tests",
+  "filesChanged": ["src/auth.test.ts"],
+  "testsRun": ["npm test -- auth: pass"],
+  "blockers": [],
+  "mergeNotes": "Review test diff before merge"
+}
+</MULTITASK_REPORT>
+```
+
+The worker must emit exactly one final report envelope. The JSON body must satisfy the report contract above. The master must ignore partial streaming text, parse only a complete envelope, and reject reports whose `runID`, `workerID`, `mode`, `sessionID`, or `workspaceID` do not match durable run state.
+
+## Execution Mode Ladder
+
+`multitask` should escalate isolation only when the cheaper mode is not enough.
+
+| Mode | Use When | Mechanism | Creates Worktree? |
+| --- | --- | --- | --- |
+| `same-session-subagent` | Small/read-only/research tasks, or scoped edits that do not need separate chat history from the user's point of view. | Prefer OpenCode background subagent behavior through the built-in `task` tool semantics: the worker runs as a child task/session under the hood and injects the result back into the master session. | No |
+| `same-workspace-session` | Contexts would pollute each other, but all workers can safely share the same branch/workspace. | Create a child session with `parentID`, title, metadata, permissions, and no new workspace. Dispatch with `session.promptAsync`. | No |
+| `new-workspace-session` | The task needs branch/diff isolation, rollback safety, risky mutation, or conflicts with current work. | Create a worktree workspace, wait for readiness, create one child session in it, then dispatch with `session.promptAsync`. | Yes |
+| `new-workspace-multi-session` | A large isolated branch contains subpackages that can themselves be parallelized. | Create one worktree workspace, then run one or more child sessions inside it using the same ladder recursively, but do not spawn another workspace unless explicitly needed. | Yes, one for the group |
+
+Decision tree:
+
+1. If the worker is read-only, research-only, or can return a compact answer to the master, use `same-session-subagent`.
+2. If the worker needs its own long context but can share the current branch and filesystem state, use `same-workspace-session`.
+3. If the worker needs branch isolation, changes global files, may break local state, or should be reviewed as a separate diff, use `new-workspace-session`.
+4. If the isolated branch is itself large enough to split, use `new-workspace-multi-session` inside that workspace.
+5. If scopes overlap on the same mutating files, do not run those workers in parallel; serialize or ask the user.
+
+Hard requirement for parallel same-session subagent mode: background `task` workers require `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`. Without it, `same-session-subagent` can still be used as a foreground/serial helper, but it is not a parallel fan-out mode; choose `same-workspace-session` or ask the user.
+
+### E2E Orchestration
+
+| Step | Behavior |
+| --- | --- |
+| Plan | Master analyzes the task and proposes workers with scope, risk, dependencies, and execution mode. |
+| Approve | User approves the plan or edits modes/scopes/max parallelism. |
+| Record state | Plugin creates a run in its durable state before dispatching workers. |
+| Dispatch cheap modes | `same-session-subagent` workers are launched first when they can unblock planning or discovery. |
+| Dispatch session modes | `same-workspace-session` workers are created with `session.create({ parentID, title, metadata, permission })`, then prompted asynchronously. |
+| Dispatch workspace modes | Workspace workers first go through workspace creation/readiness, then session creation and prompt dispatch. |
+| Monitor | Events update worker status; polling reconciles missed events and restart recovery. |
+| Complete | Master collects structured reports, validates required fields, reads diffs/tests, and produces the merge plan. |
+
+### Workspace Strategy For Escalated Isolation
+
+Use the built-in OpenCode worktree adapter only for modes that need branch/worktree isolation:
 
 | Step | API/Behavior |
 | --- | --- |
 | Verify support | `experimental.workspace.adapter.list` should include `worktree`. |
-| Create workspace | `experimental.workspace.create` with type `worktree`, branch `multitask/<run>/<worker>` or detached fallback. |
+| Create workspace | `experimental.workspace.create` with type `worktree`, branch `multitask/<run>/<worker-or-group>` or detached fallback. |
 | Wait for readiness | For local `worktree`, do not treat `workspace.status=connected` as sufficient. Use it as a connection signal, then wait for `worktree.ready` or verified worktree bootstrap completion before dispatching prompts. |
 | Create child session | `session.create` with body `workspaceID`, `parentID`, title, metadata, and worker permission rules; route the request with workspace/directory context when using raw HTTP/SDK parameters. |
 | Send task | `session.promptAsync` with `sessionID`, workspace/directory context, and worker prompt parts. |
 | Keep visible | `experimental.workspace.syncList` after creation and after major lifecycle events. |
 
-Hard requirement: launch OpenCode with `OPENCODE_EXPERIMENTAL_WORKSPACES=true` or `OPENCODE_EXPERIMENTAL=true` for workspace switching/sync. Without it, the plugin should fail clearly or degrade to plain worktrees only if explicitly configured.
+Hard requirement for workspace modes: launch OpenCode with `OPENCODE_EXPERIMENTAL_WORKSPACES=true` or `OPENCODE_EXPERIMENTAL=true` for workspace switching/sync. Without it, the plugin should fail clearly before choosing workspace modes, or degrade to non-workspace modes only if the user explicitly approves the risk.
 
 ### Branch Naming
 
@@ -213,10 +274,34 @@ Minimum run state:
 | `runID` | Stable run identifier. |
 | `masterSessionID` | Coordinator session. |
 | `goal` | Original user goal. |
-| `workers[]` | Worker IDs with task, scope, workspaceID, sessionID, branch, base/head revisions, diffRef, status. |
+| `workers[]` | Worker IDs with task, mode, scope, sessionID, optional workspaceID/branch, base/head revisions, diffRef, status, and last observed event/message. |
 | `createdAt/updatedAt` | Recovery and cleanup. |
 | `maxParallel` | Admission limit used. |
 | `status` | `planning`, `running`, `collecting`, `done`, `cancelled`, `failed`. |
+
+## Completion Signaling
+
+The master session must not rely on a single event to know that a worker finished. V1 should combine structured reports, events, polling, and durable state.
+
+| Signal | Use | Caveat |
+| --- | --- | --- |
+| Structured final report | Authoritative worker completion payload. Master parses the complete `<MULTITASK_REPORT version="1">` envelope and validates `runID`, `workerID`, `mode`, `sessionID`, workspace fields, status, files, tests, blockers, and merge notes. | The report can be malformed or missing; then worker remains `needs-review` or `blocked`. |
+| `session.status` | Detect child session `busy`, `idle`, or `retry`. | `idle` means no active turn, not necessarily successful completion. Master still checks report. |
+| `message.updated` / `message.part.updated` | Detect report markers while the assistant message streams or updates. | Streaming can be partial; validate only once the worker is idle or the report is complete. |
+| Built-in task result injection | For `same-session-subagent`, the `task` behavior injects a synthetic result into the parent session, including the child task/session ID. Parse the report envelope from that injected result. | Treat this as a report transport, not as full run state. |
+| `permission.asked` / `question.asked` | Mark worker blocked and surface the blocker to master/user. | A pending permission/question is not failure. |
+| `session.error` | Mark worker failed and capture error details. | Recovery may still be possible from durable state. |
+| Polling fallback | Re-read child sessions/messages/workspaces after missed events or restart. | Required because plugin/server can restart and event schemas can drift. |
+
+Worker completion algorithm:
+
+1. Dispatch worker and store run state before sending the prompt.
+2. Mark worker `running` when prompt dispatch succeeds.
+3. Watch events and periodically poll worker session/message state.
+4. When a worker becomes idle or a task result arrives, parse exactly one complete `<MULTITASK_REPORT version="1">...</MULTITASK_REPORT>` envelope from the final worker output.
+5. Validate the report against the stored `runID`, `workerID`, `mode`, `sessionID`, and `workspaceID` if present; reject mismatches as `needs-review`.
+6. Mark worker `done`, `blocked`, `failed`, or `needs-review` in durable state.
+7. Notify the master session through `multitask_status`/`multitask_collect` output, and optionally inject a concise synthetic status update if the implementation supports it safely.
 
 ## Scheduling And Conflict Policy
 
@@ -226,13 +311,15 @@ V1 should be conservative.
 | --- | --- |
 | Max workers | 2-4 unless user explicitly raises it. |
 | Require file scopes | Yes. No scope means serial or ask user. |
-| Global files | Serialize tasks touching package managers, lockfiles, root config, auth/security. |
+| Read-only research | Prefer `same-session-subagent`. |
+| Context-heavy but same branch | Prefer `same-workspace-session`. |
+| Global files | Serialize tasks touching package managers, lockfiles, root config, auth/security; if parallelism is still needed, escalate to workspace mode. |
 | Same file overlap | Do not run in parallel. |
 | Parent/child directory overlap | Do not run in parallel unless read-only. |
 | Dependencies | Use DAG waves; only dispatch next wave after dependencies report done. |
-| Dirty main worktree | Ask before starting, or require clean base. |
+| Dirty main worktree | Ask before mutating same-workspace workers, or require clean base for workspace modes. |
 
-Borrow concepts from `opencode-swarm` Lean Turbo lane planning, but implement only what is needed for workspace/session fan-out.
+Borrow concepts from `opencode-swarm` Lean Turbo lane planning, but implement only what is needed for isolation-aware session/workspace fan-out.
 
 ## Event Handling
 
@@ -284,12 +371,15 @@ No custom Desktop/Web visual plugin for v1. Desktop sessions can still use serve
 
 | Failure | Handling |
 | --- | --- |
-| Experimental workspace flag missing | Fail clearly before creating anything, unless user enables degraded mode. |
-| Adapter unavailable | Tell user `worktree` adapter not listed; do not manually shell out unless configured. |
-| Workspace create fails | Mark worker failed, keep run active if other workers can proceed. |
+| Experimental workspace flag missing | Do not choose workspace modes. Continue only with approved non-workspace modes, or ask the user to enable the flag. |
+| Background subagent flag missing | Do not claim same-session parallel fan-out. Use foreground/serial task behavior, choose `same-workspace-session`, or ask user to enable `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`. |
+| Adapter unavailable | Tell user `worktree` adapter is not listed for workspace-mode workers; do not manually shell out unless configured. |
+| Mode misclassification | Stop before dispatch if scope/risk says workspace isolation is needed but unavailable or unapproved. |
+| Workspace create fails | Mark the workspace-mode worker failed, keep run active if other workers can proceed. |
 | Workspace/worktree readiness timeout | Retry status/readiness polling, then mark blocked; do not send prompt blindly. |
-| Child session create fails | Remove workspace if empty and mark worker failed. |
+| Child session create fails | For workspace modes, remove workspace if empty; mark worker failed. For same-workspace modes, keep master state inspectable. |
 | Prompt dispatch fails | Keep workspace/session for inspection; mark failed. |
+| Report missing or malformed | Mark worker `needs-review`; do not treat `idle` as success. |
 | Permission/question pending in worker | Pause worker and surface blocker to master/user. |
 | Worker stalls | Detect idle/no progress timeout; allow restart or cancel. |
 | Conflicting diffs | Produce merge plan; do not auto-merge. |
@@ -312,39 +402,47 @@ No custom Desktop/Web visual plugin for v1. Desktop sessions can still use serve
 These are not blockers for the design doc, but should be decided before implementation:
 
 1. Should `multitask` be a standalone plugin or an `opencode-forge` contribution/mode?
-2. Should workers be branch-backed by default, or detached worktrees until merge time?
-3. Should worker prompts be generated by the master model or deterministic from a user-approved plan file?
-4. Should v1 support Desktop users only through chat tools, or also require TUI for the full workflow?
-5. Should `.multitask/` audit exports be generated automatically, only on demand, or disabled by default?
-6. Should `multitask` integrate with existing `opencode-swarm`/`swarm-tools` file reservation formats, or keep its own minimal scope model?
+2. What exact thresholds should choose `same-session-subagent`, `same-workspace-session`, or workspace mode?
+3. For workspace-mode workers, should worktrees be branch-backed by default, or detached until merge time?
+4. Should worker prompts be generated by the master model or deterministic from a user-approved plan file?
+5. Should v1 support Desktop users only through chat tools, or also require TUI for the full workflow?
+6. Should `.multitask/` audit exports be generated automatically, only on demand, or disabled by default?
+7. Should `multitask` integrate with existing `opencode-swarm`/`swarm-tools` file reservation formats, or keep its own minimal scope model?
 
 ## MVP Plan
 
 | Phase | Deliverable | Exit Criteria |
 | --- | --- | --- |
-| 0. Spike | Prove workspace/session fan-out with raw SDK calls. | One master action creates two worktree workspaces, two sessions, and sends async prompts. |
-| 1. Server MVP | Server plugin tools and durable state. | `multitask_start/status/collect/cancel` work from chat. |
-| 2. Safety MVP | Scope validation and permission rules. | Workers cannot edit outside assigned scope or start nested multitask runs. |
-| 3. TUI MVP | Command palette/dialog/status/jump. | User can launch, monitor, and jump to worker sessions from TUI. |
-| 4. Recovery | Restart/reconcile. | Plugin can recover active runs after OpenCode restart. |
-| 5. Merge Assist | Aggregated diff and merge plan. | Master produces deterministic integration order and conflict report. |
+| 0. Spike | Prove non-workspace fan-out. | One master action dispatches two workers without creating worktrees: one same-session subagent UX worker and one same-workspace child session. |
+| 1. Server MVP | Server plugin tools, durable state, and completion signaling. | `multitask_start/status/collect/cancel` work from chat and correctly parse worker reports. |
+| 2. Isolation Routing MVP | Mode selection and scope validation. | Planner chooses the cheapest safe mode and refuses unsafe parallel overlap. |
+| 3. Workspace Escalation MVP | Worktree workspace mode. | A risky worker creates one worktree workspace, one child session, and reports back. |
+| 4. Safety MVP | Permission rules and hard enforcement. | Workers cannot edit outside assigned scope or start nested multitask runs. |
+| 5. TUI MVP | Command palette/dialog/status/jump. | User can launch, monitor, and jump to worker sessions/workspaces from TUI. |
+| 6. Recovery | Restart/reconcile. | Plugin can recover active runs after OpenCode restart. |
+| 7. Merge Assist | Aggregated diff and merge plan. | Master produces deterministic integration order and conflict report. |
 
 ## Verification Checklist
 
-Use a test repo with a clean git status.
+Use a test repo with a clean git status for mutating tests. Read-only mode tests can run without workspace flags.
 
-1. Start OpenCode with `OPENCODE_EXPERIMENTAL_WORKSPACES=true`.
-2. Confirm `experimental.workspace.adapter.list` includes `worktree`.
-3. Start a run with two independent tasks and non-overlapping scopes.
-4. Confirm two workspaces are created, reach `connected`, and for worktrees complete `worktree.ready` or equivalent bootstrap verification.
-5. Confirm two sessions are created with `workspaceID`, `parentID`, and correct workspace/directory routing.
-6. Confirm each worker receives its prompt through `promptAsync` and begins running.
-7. Confirm `multitask_status` reports running/done/blocked accurately.
-8. Force one worker failure and confirm the run remains inspectable.
-9. Force one permission/question blocker and confirm it surfaces to master/user.
-10. Confirm `multitask_collect` reads reports and produces a merge plan.
-11. Confirm `multitask_cleanup` removes only selected completed workspaces.
-12. Restart OpenCode mid-run and confirm recovery/reconciliation.
+1. For parallel same-session tests, start OpenCode with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`.
+2. Start a run with two read-only/research workers and confirm no worktree workspace is created.
+3. Confirm `same-session-subagent` workers have concrete child task/session IDs and return a complete `<MULTITASK_REPORT version="1">` envelope to the master session.
+4. Start a run with two context-heavy but same-branch workers and confirm child sessions are created with `parentID` and no new workspace.
+5. Confirm each child session receives its prompt through `promptAsync` and begins running.
+6. Confirm `multitask_status` reports running/done/blocked accurately across both non-workspace modes.
+7. Start OpenCode with `OPENCODE_EXPERIMENTAL_WORKSPACES=true` for workspace-mode tests.
+8. Confirm `experimental.workspace.adapter.list` includes `worktree`.
+9. Start a risky mutating worker and confirm exactly one worktree workspace is created for that worker or worker group.
+10. Confirm the workspace reaches `connected`, and for worktrees completes `worktree.ready` or equivalent bootstrap verification before prompt dispatch.
+11. Confirm the workspace-mode child session is created with `workspaceID`, `parentID`, and correct workspace/directory routing.
+12. Force one worker failure and confirm the run remains inspectable.
+13. Force one permission/question blocker and confirm it surfaces to master/user.
+14. Confirm missing, malformed, partial, or mismatched reports become `needs-review`, not `done`.
+15. Confirm `multitask_collect` reads reports and produces a merge plan.
+16. Confirm `multitask_cleanup` removes only selected completed workspaces, not same-workspace sessions.
+17. Restart OpenCode mid-run and confirm recovery/reconciliation.
 
 Relevant upstream tests to study or mirror in the future project:
 
@@ -357,4 +455,4 @@ Relevant upstream tests to study or mirror in the future project:
 
 ## Decision
 
-Build `multitask` only if the exact fan-out/fan-in workflow is required and cannot be contributed to `opencode-forge`. The project should be intentionally thin: use OpenCode's workspace/session APIs, reuse proven patterns from Forge and Swarm, and focus on master-session orchestration plus report aggregation.
+Build `multitask` only if the exact isolation-aware fan-out/fan-in workflow is required and cannot be contributed to `opencode-forge`. The project should be intentionally thin: use OpenCode's existing subagent/session/workspace APIs, reuse proven patterns from Forge and Swarm, and focus on master-session orchestration plus report aggregation.
