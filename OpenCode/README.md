@@ -23,7 +23,7 @@
 | [`08-programmatic-slash-commands.md`](08-programmatic-slash-commands.md) | Как делать slash-style TUI команды, которые выполняют код напрямую через `api.keymap.registerLayer`, без LLM-turn и prompt rewrite. |
 | [`09-rules-and-memory.md`](09-rules-and-memory.md) | Как OpenCode загружает memory/rules: `AGENTS.md`, `CLAUDE.md`, `opencode.json` `instructions`, и как раскладывать правила между global/project/workspace файлами. |
 | [`10-desktop-development.md`](10-desktop-development.md) | Как устроен OpenCode Desktop: Electron, shared web UI, что можно менять plugin-ами, а что требует core/app PR. |
-| [`11-multitask-plugin-design.md`](11-multitask-plugin-design.md) | Source-backed дизайн будущего `opencode-conductor`: plugin + skill, isolation ladder, child sessions, optional worktree workspaces, status and report aggregation. |
+| [`11-multitask-plugin-design.md`](11-multitask-plugin-design.md) | Source-backed дизайн будущего `opencode-orchestrator`: plugin + skill, isolation ladder, child sessions, optional worktree workspaces, status and report aggregation. |
 
 ## Быстрый Выбор Поверхности Расширения
 
@@ -49,7 +49,7 @@
 | Показать выбор/confirm/prompt в UI | TUI plugin `api.ui.dialog.replace(...)` + `DialogSelect/Confirm/Prompt/Alert`. |
 | Спросить пользователя во время agent run | Built-in `question` tool. |
 | Попросить разрешение на операцию | Permission config или custom tool `ctx.ask(...)`. |
-| Спроектировать master-worker orchestration с минимальной достаточной изоляцией | [`11-multitask-plugin-design.md`](11-multitask-plugin-design.md): `conductor` skill выбирает стратегию, plugin исполняет child sessions, worktree/workspace escalation, status и collect. |
+| Спроектировать master-worker orchestration с минимальной достаточной изоляцией | [`11-multitask-plugin-design.md`](11-multitask-plugin-design.md): `orchestrator` skill выбирает стратегию, plugin исполняет child sessions, worktree/workspace escalation, status и collect. |
 
 ## Главная Ментальная Модель
 
