@@ -6,7 +6,7 @@
 
 - Официальная документация: https://opencode.ai/docs, страницы `plugins`, `config`, `sdk`, `server`, `tools`, `custom-tools`, `permissions`.
 - Исходники: `anomalyco/opencode`, ветка `dev`; базовые hook notes сверялись с `9f708e748af34cf63c0b1010c4a07ddab1b10ef6`, Desktop/TUI deltas сверены с `18ba80f` на `2026-06-02`.
-- Ключевые файлы исходников: `packages/plugin/src/index.ts`, `packages/plugin/src/tui.ts`, `packages/opencode/src/plugin/*`, `packages/opencode/src/bus/*`, `packages/opencode/src/session/*`, `packages/opencode/src/tool/*`, `packages/app/src/*`, `packages/desktop/src/*`, `packages/sdk/js/src/v2/gen/types.gen.ts`.
+- Ключевые файлы исходников: `packages/plugin/src/index.ts`, `packages/plugin/src/tui.ts`, `packages/opencode/src/plugin/*`, `packages/opencode/src/bus/*`, `packages/opencode/src/session/*`, `packages/opencode/src/tool/*`, `packages/opencode/src/control-plane/*`, `packages/opencode/src/worktree/*`, `packages/opencode/src/server/routes/instance/httpapi/*`, `packages/app/src/*`, `packages/desktop/src/*`, `packages/sdk/js/src/v2/gen/*`.
 
 ## Документы
 
@@ -23,6 +23,7 @@
 | [`08-programmatic-slash-commands.md`](08-programmatic-slash-commands.md) | Как делать slash-style TUI команды, которые выполняют код напрямую через `api.keymap.registerLayer`, без LLM-turn и prompt rewrite. |
 | [`09-rules-and-memory.md`](09-rules-and-memory.md) | Как OpenCode загружает memory/rules: `AGENTS.md`, `CLAUDE.md`, `opencode.json` `instructions`, и как раскладывать правила между global/project/workspace файлами. |
 | [`10-desktop-development.md`](10-desktop-development.md) | Как устроен OpenCode Desktop: Electron, shared web UI, что можно менять plugin-ами, а что требует core/app PR. |
+| [`11-multitask-plugin-design.md`](11-multitask-plugin-design.md) | Source-backed дизайн будущего `multitask` plugin: master session, worktree workspaces, child sessions, parallel dispatch, status and report aggregation. |
 
 ## Быстрый Выбор Поверхности Расширения
 
@@ -48,6 +49,7 @@
 | Показать выбор/confirm/prompt в UI | TUI plugin `api.ui.dialog.replace(...)` + `DialogSelect/Confirm/Prompt/Alert`. |
 | Спросить пользователя во время agent run | Built-in `question` tool. |
 | Попросить разрешение на операцию | Permission config или custom tool `ctx.ask(...)`. |
+| Спроектировать master-worker swarm на worktrees/workspaces | [`11-multitask-plugin-design.md`](11-multitask-plugin-design.md): сначала проверить `opencode-forge`/`opencode-swarm`, затем строить тонкий orchestration layer. |
 
 ## Главная Ментальная Модель
 
